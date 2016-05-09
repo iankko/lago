@@ -21,14 +21,15 @@ import ConfigParser
 import functools
 import logging
 import os
+import re
 import shutil
 
-import lockfile
 import nose.core
 import nose.config
 from ovirtsdk.infrastructure.errors import (RequestError, ConnectionError)
 import lago
 from lago import log_utils
+from lago.utils import LockFile
 from lago.prefix import Prefix
 from lago.workdir import Workdir
 
@@ -55,39 +56,70 @@ def _with_repo_server(func):
     return wrapper
 
 
+def _fix_reposync_issues(reposync_out, repo_path):
+    """
+    Fix for the issue described at::
+        https://bugzilla.redhat.com/show_bug.cgi?id=1332441
+    """
+    LOGGER.warn(
+        'Due to bug https://bugzilla.redhat.com/show_bug.cgi?id=1332441 '
+        'sometimes reposync fails to update some packages that have older '
+        'versions already downloaded, will remove those if any and retry'
+    )
+    package_regex = re.compile(r'(?P<package_name>[^:\r]+): \[Errno 256\]')
+    for match in package_regex.findall(reposync_out):
+        find_command = ['find', repo_path, '-name', match + '*', ]
+        ret, out, _ = utils.run_command(find_command)
+
+        if ret:
+            raise RuntimeError('Failed to execute %s' % find_command)
+
+        for to_remove in out.splitlines():
+            if not to_remove.startswith(repo_path):
+                LOGGER.warn('Skipping out-of-repo file %s', to_remove)
+                continue
+
+            LOGGER.info('Removing: %s', to_remove)
+            os.unlink(to_remove)
+
+
 def _sync_rpm_repository(repo_path, yum_config, repos):
     lock_path = os.path.join(repo_path, 'repolock')
 
     if not os.path.exists(repo_path):
         os.makedirs(repo_path)
 
-    with lockfile.LockFile(lock_path, timeout=180):
-        reposync_command = [
-            'reposync',
-            '--config=%s' % yum_config,
-            '--download_path=%s' % repo_path,
-            '--newest-only',
-            '--delete',
-            '--cachedir=%s/cache' % repo_path,
-        ] + [
-            '--repoid=%s' % repo for repo in repos
-        ]
+    reposync_command = [
+        'reposync',
+        '--config=%s' % yum_config,
+        '--download_path=%s' % repo_path,
+        '--newest-only',
+        '--delete',
+        '--cachedir=%s/cache' % repo_path,
+    ] + [
+        '--repoid=%s' % repo for repo in repos
+    ]
 
+    with LockFile(lock_path, timeout=180):
         with LogTask('Running reposync'):
-            ret, _, _ = utils.run_command(reposync_command)
+            ret, out, _ = utils.run_command(reposync_command)
+        if not ret:
+            return
 
+        _fix_reposync_issues(reposync_out=out, repo_path=repo_path)
+        with LogTask('Rerunning reposync'):
+            ret, _, _ = utils.run_command(reposync_command)
         if not ret:
             return
 
         LOGGER.warn(
-            'Failed to run reposync a first time, that usually means that '
+            'Failed to run reposync again, that usually means that '
             'some of the local rpms might be corrupted or the metadata '
             'invalid, cleaning caches and retrying a second time'
         )
         shutil.rmtree('%s/cache' % repo_path)
         with LogTask('Rerunning reposync'):
             ret, _, _ = utils.run_command(reposync_command)
-
         if not ret:
             return
 
@@ -376,7 +408,6 @@ class OvirtPrefix(Prefix):
         all_dists = list(set(engine_dists + vdsm_dists))
 
         repos = []
-        jobs = []
 
         if rpm_repo and reposync_yum_config:
             parser = ConfigParser.SafeConfigParser()
@@ -390,21 +421,10 @@ class OvirtPrefix(Prefix):
             ]
 
             if not skip_sync:
-                jobs.append(
-                    functools.partial(
-                        _sync_rpm_repository,
-                        rpm_repo,
-                        reposync_yum_config,
-                        repos,
-                    )
-                )
-
-        with LogTask(
-            'Syncing remote repos locally (this might take some time)'
-        ):
-            reposync_jobs = lago.utils.VectorThread(jobs)
-            reposync_jobs.start_all()
-            reposync_jobs.join_all()
+                with LogTask(
+                    'Syncing remote repos locally (this might take some time)'
+                ):
+                    _sync_rpm_repository(rpm_repo, reposync_yum_config, repos)
 
         self._create_rpm_repository(all_dists, rpm_repo, repos)
         self.save()
