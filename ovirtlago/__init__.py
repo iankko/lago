@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import shutil
+import time
 
 import nose.core
 import nose.config
@@ -34,7 +35,6 @@ from lago.prefix import Prefix
 from lago.workdir import Workdir
 
 import merge_repos
-import repoverify
 import paths
 import testlib
 import utils
@@ -66,7 +66,7 @@ def _fix_reposync_issues(reposync_out, repo_path):
         'sometimes reposync fails to update some packages that have older '
         'versions already downloaded, will remove those if any and retry'
     )
-    package_regex = re.compile(r'(?P<package_name>[^:\r]+): \[Errno 256\]')
+    package_regex = re.compile(r'(?P<package_name>[^:\r\s]+): \[Errno 256\]')
     for match in package_regex.findall(reposync_out):
         find_command = ['find', repo_path, '-name', match + '*', ]
         ret, out, _ = utils.run_command(find_command)
@@ -118,17 +118,14 @@ def _sync_rpm_repository(repo_path, yum_config, repos):
             'invalid, cleaning caches and retrying a second time'
         )
         shutil.rmtree('%s/cache' % repo_path)
-        with LogTask('Rerunning reposync'):
+        with LogTask('Rerunning reposync a last time'):
             ret, _, _ = utils.run_command(reposync_command)
-        if not ret:
-            return
+        if ret:
+            raise RuntimeError(
+                'Failed to run reposync a second time, aborting'
+            )
 
-        LOGGER.warn(
-            'Failed to run reposync the second time, making sure everyithing '
-            'is consistent before continuing'
-        )
-        with LogTask('Verifying downloads'):
-            repoverify.verify_reposync(yum_config, repo_path, repos)
+        return
 
 
 def _build_rpms(name, script, source_dir, output_dir, dists, env=None):
@@ -372,15 +369,15 @@ class OvirtPrefix(Prefix):
 
             rpm_dirs.extend(
                 [
-                    os.path.join(folder, dist)
-                    for folder in project_roots if os.path.exists(folder)
+                    os.path.join(folder, dist) for folder in project_roots
+                    if os.path.exists(folder)
                 ]
             )
 
             rpm_dirs.extend(
                 [
-                    os.path.join(repos_path, name)
-                    for name in repo_names if name.endswith(dist)
+                    os.path.join(repos_path, name) for name in repo_names
+                    if name.endswith(dist)
                 ],
             )
 
@@ -415,8 +412,7 @@ class OvirtPrefix(Prefix):
                 parser.readfp(repo_conf_fd)
 
             repos = [
-                repo
-                for repo in parser.sections()
+                repo for repo in parser.sections()
                 if repo.split('-')[-1] in all_dists
             ]
 
@@ -488,7 +484,7 @@ class OvirtPrefix(Prefix):
     def serve(self):
         try:
             while True:
-                pass
+                time.sleep(0.1)
         except:
             pass
 
