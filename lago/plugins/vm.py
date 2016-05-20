@@ -94,6 +94,10 @@ class VMProviderPlugin(plugins.Plugin):
     def revert_snapshot(self, name, *args, **kwargs):
         pass
 
+    @abstractmethod
+    def vnc_port(self, *args, **kwargs):
+        pass
+
     def interactive_console(self):
         return self.vm.interactive_ssh()
 
@@ -148,6 +152,9 @@ class VMPlugin(plugins.Plugin):
 
     def interactive_console(self, *args, **kwargs):
         return self.provider.interactive_console(*args, **kwargs)
+
+    def vnc_port(self, *args, **kwargs):
+        return self.provider.vnc_port(*args, **kwargs)
 
     def copy_to(self, local_path, remote_path):
         with LogTask(
@@ -255,9 +262,6 @@ class VMPlugin(plugins.Plugin):
 
         with open(path, 'w') as f:
             utils.json_dump(self._spec, f)
-
-    def vnc_port(self):
-        return 'no-vnc'
 
     @_check_alive
     def service(self, name):
