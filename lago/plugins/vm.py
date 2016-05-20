@@ -96,6 +96,30 @@ class VMProviderPlugin(plugins.Plugin):
     def interactive_console(self):
         return self.vm.interactive_ssh()
 
+    def extract_paths(self, paths):
+        if self.vm.alive() and self.vm.ssh_reachable():
+            self._extract_paths_scp(paths=paths)
+        elif self.vm.alive():
+            raise ExtractPathError(
+                'Unable to extract logs from alive but unreachable host %s. '
+                'Try stopping it first' % self.vm.name()
+            )
+        else:
+            raise ExtractPathError(
+                'Unable to extract logs from alive but unreachable host %s. '
+                'Try stopping it first' % self.vm.name()
+            )
+
+    def _extract_paths_scp(self, paths):
+        for host_path, guest_path in paths:
+            LOGGER.debug(
+                'Extracting scp://%s:%s to %s',
+                self.vm.name(),
+                host_path,
+                guest_path,
+            )
+            self.vm.copy_from(local_path=guest_path, remote_path=host_path)
+
 
 class VMPlugin(plugins.Plugin):
     __metaclass__ = ABCMeta
@@ -151,6 +175,9 @@ class VMPlugin(plugins.Plugin):
 
     def vnc_port(self, *args, **kwargs):
         return self.provider.vnc_port(*args, **kwargs)
+
+    def extract_paths(self, paths, *args, **kwargs):
+        return self.provider.extract_paths(paths, *args, **kwargs)
 
     def copy_to(self, local_path, remote_path):
         with LogTask(
@@ -233,20 +260,6 @@ class VMPlugin(plugins.Plugin):
             return False
 
         return True
-
-    def extract_paths(self, paths):
-        if self.alive() and self.ssh_reachable():
-            self._extract_paths_scp(paths=paths)
-        elif self.alive():
-            raise ExtractPathError(
-                'Unable to extract logs from alive but unreachable host %s. '
-                'Try stopping it first' % self.name()
-            )
-        else:
-            raise ExtractPathError(
-                'Unable to extract logs from alive but unreachable host %s. '
-                'Try stopping it first' % self.name()
-            )
 
     def save(self, path=None):
         if path is None:
@@ -354,16 +367,6 @@ class VMPlugin(plugins.Plugin):
             yield scp
         finally:
             client.close()
-
-    def _extract_paths_scp(self, paths):
-        for host_path, guest_path in paths:
-            LOGGER.debug(
-                'Extracting scp://%s:%s to %s',
-                self.name(),
-                host_path,
-                guest_path,
-            )
-            self.copy_from(local_path=guest_path, remote_path=host_path)
 
     def _detect_service_provider(self):
         LOGGER.debug('Detecting service provider for %s', self.name())
