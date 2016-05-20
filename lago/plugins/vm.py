@@ -56,6 +56,48 @@ def _check_alive(func):
     return wrapper
 
 
+class VMProviderPlugin(plugins.Plugin):
+    """
+    If you want to use a custom provider for you VMs (say, ovirt for example),
+    you have to inherit from this class, and then define the
+    'default_vm_provider' in your config to be your plugin, or explicitly
+    specify it on each domain definition in the initfile with 'vm_provider' key
+    """
+    def __init__(self, vm):
+        self.vm = vm
+
+    @abstractmethod
+    def start(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def stop(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def defined(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def bootstrap(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def state(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def create_snapshot(self, name, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def revert_snapshot(self, name, *args, **kwargs):
+        pass
+
+    def interactive_console(self):
+        return self.vm.interactive_ssh()
+
+
 class VMPlugin(plugins.Plugin):
     __metaclass__ = ABCMeta
     '''VM properties:
@@ -77,37 +119,35 @@ class VMPlugin(plugins.Plugin):
             instantiate=False,
         )
         self._service_class = self._get_service_provider()
+        self.vm_providers = plugins.load_plugins(
+            namespace=plugins.PLUGIN_ENTRY_POINTS['vm_provider'],
+            instantiate=False,
+        )
+        self.provider = self._get_vm_provider()
 
-    @abstractmethod
-    def start(self):
-        pass
+    def start(self, *args, **kwargs):
+        return self.provider.start(*args, **kwargs)
 
-    @abstractmethod
-    def stop(self):
-        pass
+    def stop(self, *args, **kwargs):
+        return self.provider.stop(*args, **kwargs)
 
-    @abstractmethod
-    def defined(self):
-        pass
+    def defined(self, *args, **kwargs):
+        return self.provider.defined(*args, **kwargs)
 
-    @abstractmethod
-    def bootstrap(self):
-        pass
+    def bootstrap(self, *args, **kwargs):
+        return self.provider.bootstrap(*args, **kwargs)
 
-    @abstractmethod
-    def state(self):
-        pass
+    def state(self, *args, **kwargs):
+        return self.provider.state(*args, **kwargs)
 
-    @abstractmethod
-    def create_snapshot(self, name):
-        pass
+    def create_snapshot(self, name, *args, **kwargs):
+        return self.provider.create_snapshot(name, *args, **kwargs)
 
-    @abstractmethod
-    def revert_snapshot(self, name):
-        pass
+    def revert_snapshot(self, name, *args, **kwargs):
+        return self.provider.revert_snapshot(name, *args, **kwargs)
 
-    def interactive_console(self):
-        return self.interactive_ssh()
+    def interactive_console(self, *args, **kwargs):
+        return self.provider.interactive_console(*args, **kwargs)
 
     def copy_to(self, local_path, remote_path):
         with LogTask(
@@ -259,6 +299,38 @@ class VMPlugin(plugins.Plugin):
                 ) for guest_path in self._artifact_paths()
             ]
         )
+
+    def guest_agent(self):
+        if 'guest-agent' not in self._spec:
+            for possible_name in ('qemu-ga', 'qemu-guest-agent'):
+                try:
+                    if self.service(possible_name).exists():
+                        self._spec['guest-agent'] = possible_name
+                        self.save()
+                        break
+                except RuntimeError as err:
+                    raise RuntimeError(
+                        'Could not find guest agent service: %s' % err
+                    )
+            else:
+                raise RuntimeError('Could not find guest agent service')
+
+        return self.service(self._spec['guest-agent'])
+
+    def has_guest_agent(self):
+        try:
+            self.guest_agent()
+        except RuntimeError:
+            return False
+
+        return True
+
+    def _get_vm_provider(self):
+        default_provider = config.get('default_vm_provider')
+        provider_name = self._spec.get('vm_provider', default_provider)
+        provider = self.vm_providers.get(provider_name)
+        self._spec['vm_provider'] = provider_name
+        return provider(vm=self)
 
     @classmethod
     def _normalize_spec(cls, spec):
