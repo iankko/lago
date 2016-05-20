@@ -26,13 +26,7 @@ from abc import (ABCMeta, abstractmethod)
 
 from scp import SCPClient
 
-from .. import (
-    config,
-    utils,
-    log_utils,
-    plugins,
-    ssh,
-)
+from .. import (config, utils, log_utils, plugins, ssh, )
 
 LOGGER = logging.getLogger(__name__)
 LogTask = functools.partial(log_utils.LogTask, logger=LOGGER)
@@ -63,6 +57,7 @@ class VMProviderPlugin(plugins.Plugin):
     'default_vm_provider' in your config to be your plugin, or explicitly
     specify it on each domain definition in the initfile with 'vm_provider' key
     """
+
     def __init__(self, vm):
         self.vm = vm
 
@@ -113,6 +108,7 @@ class VMPlugin(plugins.Plugin):
     * network/mac addr
     * virt_env
     '''
+
     def __init__(self, env, spec):
         self.virt_env = env
         self._spec = self._normalize_spec(spec.copy())

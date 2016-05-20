@@ -26,14 +26,7 @@ import uuid
 
 import lxml.etree
 
-from . import (
-    config,
-    brctl,
-    utils,
-    log_utils,
-    plugins,
-    libvirt_utils,
-)
+from . import (config, brctl, utils, log_utils, plugins, libvirt_utils, )
 
 LOGGER = logging.getLogger(__name__)
 LogTask = functools.partial(log_utils.LogTask, logger=LOGGER)
@@ -344,9 +337,7 @@ class Network(object):
         return self._env.prefixed_name(self.name(), max_length=15)
 
     def alive(self):
-        net_names = [
-            net.name() for net in self.libvirt_con.listAllNetworks()
-        ]
+        net_names = [net.name() for net in self.libvirt_con.listAllNetworks()]
         return self._libvirt_name() in net_names
 
     def start(self):

@@ -6,15 +6,8 @@ import pwd
 import libvirt
 import guestfs
 
-from . import (
-    log_utils,
-    utils,
-    sysprep,
-    libvirt_utils,
-    config,
-)
+from . import (log_utils, utils, sysprep, libvirt_utils, config, )
 from .plugins import vm
-
 
 LOGGER = logging.getLogger(__name__)
 LogTask = functools.partial(log_utils.LogTask, logger=LOGGER)
@@ -59,14 +52,10 @@ class LocalLibvirtVMProvider(vm.VMProviderPlugin):
         if self.defined():
             self.vm._ssh_client = None
             with LogTask('Destroying VM %s' % self.vm.name()):
-                self.libvirt_con.lookupByName(
-                    self._libvirt_name(),
-                ).destroy()
+                self.libvirt_con.lookupByName(self._libvirt_name(), ).destroy()
 
     def defined(self):
-        dom_names = [
-            dom.name() for dom in self.libvirt_con.listAllDomains()
-        ]
+        dom_names = [dom.name() for dom in self.libvirt_con.listAllDomains()]
         return self._libvirt_name() in dom_names
 
     def bootstrap(self):
@@ -106,9 +95,7 @@ class LocalLibvirtVMProvider(vm.VMProviderPlugin):
         if not self.defined():
             return 'down'
 
-        state = self.libvirt_con.lookupByName(
-            self._libvirt_name()
-        ).state()
+        state = self.libvirt_con.lookupByName(self._libvirt_name()).state()
         return libvirt_utils.Domain.resolve_state(state)
 
     def create_snapshot(self, name):
@@ -155,8 +142,7 @@ class LocalLibvirtVMProvider(vm.VMProviderPlugin):
 
     def extract_paths(self, paths):
         if (
-            self.vm.alive()
-            and self.vm.ssh_reachable()
+            self.vm.alive() and self.vm.ssh_reachable()
             and self.vm.has_guest_agent()
         ):
             self._extract_paths_live(paths=paths)

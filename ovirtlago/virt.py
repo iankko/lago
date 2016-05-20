@@ -25,10 +25,7 @@ import lago
 import lago.vm
 from ovirtsdk.infrastructure.errors import (RequestError, ConnectionError)
 
-from . import (
-    constants,
-    testlib,
-)
+from . import (constants, testlib, )
 
 
 class OvirtVirtEnv(lago.virt.VirtEnv):
