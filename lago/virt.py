@@ -17,7 +17,6 @@
 #
 # Refer to the README and COPYING files for full details of the license
 #
-import collections
 import contextlib
 import functools
 import hashlib
@@ -29,6 +28,7 @@ import socket
 import sys
 import time
 import uuid
+import warnings
 
 import guestfs
 import libvirt
@@ -40,8 +40,7 @@ import config
 import brctl
 import utils
 import sysprep
-from . import log_utils
-from . import libvirt_utils
+from . import (log_utils, libvirt_utils, plugins)
 
 LOGGER = logging.getLogger(__name__)
 LogTask = functools.partial(log_utils.LogTask, logger=LOGGER)
@@ -440,149 +439,76 @@ class BridgeNetwork(Network):
             brctl.destroy(self._libvirt_name())
 
 
-class ServiceState:
-    MISSING = 0
-    INACTIVE = 1
-    ACTIVE = 2
+def _resolve_service_class(class_name, service_providers):
+    """
+    **NOTE**: This must be remved once the service_class spec entry is fully
+    deprecated
 
+    Retrieves a service plugin class from the class name instead of the
+    provider name
 
-class _Service:
-    def __init__(self, vm, name):
-        self._vm = vm
-        self._name = name
+    Args:
+        class_name(str): Class name of the service plugin to retrieve
+        service_providers(dict): provider_name->provider_class of the loaded
+            service providers
 
-    def exists(self):
-        return self.state() != ServiceState.MISSING
+    Returns:
+        class: Class of the plugin that matches that name
 
-    def alive(self):
-        return self.state() == ServiceState.ACTIVE
+    Raises:
+        lago.plugins.NoSuchPluginError: if there was no service plugin that
+            matched the search
+    """
+    for plugin in service_providers.itervalues():
+        if plugin.__class__.__name__ == class_name:
+            return plugin
 
-    def start(self):
-        state = self.state()
-        if state == ServiceState.MISSING:
-            raise RuntimeError('Service %s not present' % self._name)
-        elif state == ServiceState.ACTIVE:
-            return
-
-        if self._request_start():
-            raise RuntimeError('Failed to start service')
-
-    def stop(self):
-        state = self.state()
-        if state == ServiceState.MISSING:
-            raise RuntimeError('Service %s not present' % self._name)
-        elif state == ServiceState.INACTIVE:
-            return
-
-        if self._request_stop():
-            raise RuntimeError('Failed to stop service')
-
-    @classmethod
-    def is_supported(cls, vm):
-        return vm.ssh(['test', '-e', cls.BIN_PATH]).code == 0
-
-
-class _SystemdService(_Service):
-    BIN_PATH = '/usr/bin/systemctl'
-
-    def _request_start(self):
-        return self._vm.ssh([self.BIN_PATH, 'start', self._name])
-
-    def _request_stop(self):
-        return self._vm.ssh([self.BIN_PATH, 'stop', self._name])
-
-    def state(self):
-        ret = self._vm.ssh([self.BIN_PATH, 'status --lines=0', self._name])
-        if not ret:
-            return ServiceState.ACTIVE
-
-        lines = [l.strip() for l in ret.out.split('\n')]
-        loaded = [l for l in lines if l.startswith('Loaded:')].pop()
-
-        if loaded.split()[1] == 'loaded':
-            return ServiceState.INACTIVE
-
-        return ServiceState.MISSING
-
-
-class _SysVInitService(_Service):
-    BIN_PATH = '/sbin/service'
-
-    def _request_start(self):
-        return self._vm.ssh([self.BIN_PATH, self._name, 'start'])
-
-    def _request_stop(self):
-        return self._vm.ssh([self.BIN_PATH, self._name, 'stop'])
-
-    def state(self):
-        ret = self._vm.ssh([self.BIN_PATH, self._name, 'status'])
-
-        if ret.code == 0:
-            return ServiceState.ACTIVE
-
-        if ret.out.strip().endswith('is stopped'):
-            return ServiceState.INACTIVE
-
-        return ServiceState.MISSING
-
-
-class _SystemdContainerService(_Service):
-    BIN_PATH = '/usr/bin/docker'
-    HOST_BIN_PATH = '/usr/bin/systemctl'
-
-    def _request_start(self):
-        ret = self._vm.ssh(
-            [self.BIN_PATH, 'exec vdsmc systemctl start', self._name]
-        )
-
-        if ret.code == 0:
-            return ret
-
-        return self._vm.ssh([self.HOST_BIN_PATH, 'start', self._name])
-
-    def _request_stop(self):
-        ret = self._vm.ssh(
-            [self.BIN_PATH, 'exec vdsmc systemctl stop', self._name]
-        )
-
-        if ret.code == 0:
-            return ret
-
-        return self._vm.ssh([self.HOST_BIN_PATH, 'stop', self._name])
-
-    def state(self):
-        ret = self._vm.ssh(
+    raise plugins.NoSuchPluginError(
+        'No service provider plugin with class name %s found, loaded '
+        'providers: %s' % (
+            class_name,
             [
-                self.BIN_PATH, 'exec vdsmc systemctl status --lines=0',
-                self._name
-            ]
+                plugin.__class__.__name__
+                for plugin in service_providers.itervalues()
+            ],
         )
-        if ret.code == 0:
-            return ServiceState.ACTIVE
-
-        lines = [l.strip() for l in ret.out.split('\n')]
-        loaded = [l for l in lines if l.startswith('Loaded:')].pop()
-
-        if loaded.split()[1] == 'loaded':
-            return ServiceState.INACTIVE
-
-        ret = self._vm.ssh([self.HOST_BIN_PATH, 'status', self._name])
-        if ret.code == 0:
-            return ServiceState.ACTIVE
-
-        lines = [l.strip() for l in ret.out.split('\n')]
-        loaded = [l for l in lines if l.startswith('Loaded:')].pop()
-
-        if loaded.split()[1] == 'loaded':
-            return ServiceState.INACTIVE
-
-        return ServiceState.MISSING
+    )
 
 
-_SERVICE_WRAPPERS = collections.OrderedDict()
-_SERVICE_WRAPPERS['systemd_container'] = _SystemdContainerService
-_SERVICE_WRAPPERS['systemd'] = _SystemdService
-_SERVICE_WRAPPERS['sysvinit'] = _SysVInitService
+def _get_service_provider(vm_spec):
+    """
+    **NOTE**: Can be reduced to just one get call once we remove support for
+    the service_class spec entry
+
+    Args:
+        vm_spec(dict): Spec with the data for the vm, like service_provider
+            entry
+
+    Returns:
+        class: class for the loaded provider for that vm_spec
+        None: if no provider was specified in the vm_spec
+    """
+    service_providers = plugins.load_plugins(
+        namespace=plugins.PLUGIN_ENTRY_POINTS['vm_service'],
+        instantiate=False,
+    )
+    service_class = vm_spec.get('service_class', None)
+    if service_class is not None:
+        warnings.warn(
+            'The service_class key for a domain is deprecated, you should '
+            'change it to service_provider instead'
+        )
+        service_provider = _resolve_service_class(
+            class_name=service_class,
+            service_providers=service_providers,
+        )
+    else:
+        service_provider = service_providers.get(
+            vm_spec.get('service_provider', None),
+            None,
+        )
+
+    return service_provider
 
 
 class VM(object):
@@ -599,10 +525,7 @@ class VM(object):
         self._env = env
         self._spec = self._normalize_spec(spec.copy())
 
-        self._service_class = _SERVICE_WRAPPERS.get(
-            self._spec.get('service_class', None),
-            None,
-        )
+        self._service_class = _get_service_provider(self._spec)
         self._ssh_client = None
 
     def virt_env(self):
@@ -1219,26 +1142,31 @@ class VM(object):
         dom_xml = lxml.etree.fromstring(dom.XMLDesc())
         return dom_xml.xpath('devices/graphics').pop().attrib['port']
 
-    def _detect_service_manager(self):
-        LOGGER.debug('Detecting service manager for %s', self.name())
-        for manager_name, service_class in _SERVICE_WRAPPERS.items():
+    def _detect_service_provider(self):
+        LOGGER.debug('Detecting service provider for %s', self.name())
+        service_providers = plugins.load_plugins(
+            namespace=plugins.PLUGIN_ENTRY_POINTS['vm_service'],
+            instantiate=False,
+        )
+
+        for provider_name, service_class in service_providers.items():
             if service_class.is_supported(self):
                 LOGGER.debug(
-                    'Setting %s as service manager for %s',
-                    manager_name,
+                    'Setting %s as service provider for %s',
+                    provider_name,
                     self.name(),
                 )
                 self._service_class = service_class
-                self._spec['service_class'] = manager_name
+                self._spec['service_provider'] = provider_name
                 self.save()
                 return
 
-        raise RuntimeError('No service manager detected for %s' % self.name())
+        raise RuntimeError('No service provider detected for %s' % self.name())
 
     @_check_alive
     def service(self, name):
         if self._service_class is None:
-            self._detect_service_manager()
+            self._detect_service_provider()
 
         return self._service_class(self, name)
 
